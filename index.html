@@ -1,7 +1,8 @@
 <!doctype html>
 <html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Relevamiento Roble</title>
-<meta name="theme-color" content="#050A22"><link rel="manifest" href="manifest.webmanifest"><link rel="apple-touch-icon" href="icon-192.png"><link rel="icon" href="icon-192.png">
+<meta name="theme-color" content="#050A22"><script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+<link rel="manifest" href="manifest.webmanifest"><link rel="apple-touch-icon" href="icon-192.png"><link rel="icon" href="icon-192.png">
 <meta name="apple-mobile-web-app-capable" content="yes"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-title" content="Relevamiento">
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
@@ -132,8 +133,8 @@ var LOGO_E={w:440,h:319,b:"/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAQDAwMDAgQDAwMEBAQFB
   var DEC=[["yo","Lo sigue haciendo"],["delego","Se delegaría"],["auto","Se automatizaría"],["elimino","Se eliminaría"]];
   var STEPS=["Su día hoy","Paso a paso","Seguimiento y herramientas","Ficha"];
   var LS="escala-relevamiento-roble";
-  var S={people:[],cur:null,step:0,open:null,armed:null};
-  var db=null,canSave=false,timers={},armTimer=null;
+  var S={people:[],cur:null,step:0,open:null,armed:null,view:""};
+  var timers={},armTimer=null;
   var $app=document.getElementById("app"),$status=document.getElementById("status"),$brand=document.getElementById("brand");
 
   function rid(){return Math.random().toString(36).slice(2,9)}
@@ -151,13 +152,16 @@ var LOGO_E={w:440,h:319,b:"/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAQDAwMDAgQDAwMEBAQFB
 
   /* ---------- guardado: local siempre, en línea si hay conexión ---------- */
   function localSave(){try{localStorage.setItem(LS,JSON.stringify(S.people))}catch(e){}}
+  var sb=null;try{if(window.supabase)sb=window.supabase.createClient("https://ctaabydmafvnfmjoyjvv.supabase.co","eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImN0YWFieWRtYWZ2bmZtam95anZ2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTQzMzU2MjQsImV4cCI6MjEwOTkxMTYyNH0.oKMDSE-t5y_XL5xS0emI9GKfpseQTlKUQowdQ6XVACQ",{auth:{persistSession:true,autoRefreshToken:true}})}catch(e){}
+  var cloud={ok:false,email:"",msg:"",fede:null,busy:false};
   function save(p){
     p.updatedAt=new Date().toISOString();localSave();
-    if(!canSave||!db){return}
+    if(!cloud.ok)return;
     setStatus("Guardando…");clearTimeout(timers[p.id]);
-    timers[p.id]=setTimeout(function(){
-      db.doc("relevamientos/"+p.id).set(JSON.parse(JSON.stringify(p))).then(function(){setStatus("Guardado")}).catch(function(){setStatus("No se pudo guardar en línea. Queda en esta tablet.",true)});
-    },900);
+    timers[p.id]=setTimeout(function(){pushOne(p)},900);
+  }
+  function pushOne(p){
+    return sb.from("relevamientos").upsert({id:p.id,data:JSON.parse(JSON.stringify(p)),updated_at:p.updatedAt}).then(function(r){if(r.error)throw r.error;setStatus("Guardado en la nube")}).catch(function(){setStatus("No se pudo guardar en la nube. Queda en esta tablet.",true)});
   }
   function mergeRemote(list){
     var by={};S.people.forEach(function(p){by[p.id]=p});
@@ -165,20 +169,57 @@ var LOGO_E={w:440,h:319,b:"/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAQDAwMDAgQDAwMEBAQFB
     S.people=Object.keys(by).map(function(k){return by[k]}).sort(function(a,b){return (a.nombre||"").localeCompare(b.nombre||"")});
     localSave();
   }
+  async function syncAll(){
+    var r=await sb.from("relevamientos").select("id,data");if(r.error)throw r.error;
+    var remote=r.data.map(function(x){return x.data});mergeRemote(remote);
+    var rm={};remote.forEach(function(x){rm[x.id]=x});
+    for(var i=0;i<S.people.length;i++){var p=S.people[i];if(!rm[p.id]||(rm[p.id].updatedAt||"")<(p.updatedAt||""))await pushOne(p)}
+  }
+  async function activar(u){
+    var c=await sb.rpc("claim_owner");
+    if(c.error){cloud.ok=false;cloud.msg="Sin conexión: se guarda en esta tablet y se sube cuando vuelva.";render();return false}
+    if(c.data!==true){cloud.msg="Esta cuenta no tiene acceso a estos datos.";await sb.auth.signOut();cloud.ok=false;render();return false}
+    cloud.ok=true;cloud.email=u.email||"";cloud.msg="";
+    try{await syncAll();setStatus("Conectado a la nube. Todo se guarda solo.")}catch(e){setStatus("Conectado, pero no se pudo sincronizar. Probá de nuevo.",true)}
+    render();return true;
+  }
   async function conectar(){
-    if(canSave)return;
+    if(!sb||cloud.ok||cloud.busy)return;cloud.busy=true;
+    try{var s=await sb.auth.getSession();var u=s.data&&s.data.session&&s.data.session.user;if(u)await activar(u)}catch(e){}
+    cloud.busy=false;
+  }
+  async function cloudAct(act,b){
+    if(!sb){cloud.msg="No se pudo cargar el servicio en la nube. Revisá la conexión y recargá.";render();return}
+    var em=(document.getElementById("lg-e")||{}).value||"",pw=(document.getElementById("lg-p")||{}).value||"";
     try{
-      if(!(window.claude&&window.claude.use))throw 0;
-      var d=await window.claude.use("db");if(!d)throw 0;
-      var snap=await Promise.race([d.collection("relevamientos").get(),new Promise(function(_,rej){setTimeout(function(){rej(0)},10000)})]);
-      db=d;canSave=true;
-      var remote=[];snap.docs.forEach(function(x){if(x.exists)remote.push(JSON.parse(JSON.stringify(x.data())))});
-      mergeRemote(remote);
-      /* subir lo que solo estaba en la tablet */
-      var rid2={};remote.forEach(function(r){rid2[r.id]=r});
-      S.people.forEach(function(p){if(!rid2[p.id]||(rid2[p.id].updatedAt||"")<(p.updatedAt||""))db.doc("relevamientos/"+p.id).set(JSON.parse(JSON.stringify(p))).catch(function(){})});
-      setStatus("Conectado. Todo se guarda solo.");render();
-    }catch(e){setStatus("Las fichas se guardan en este dispositivo. Usá “Copia de seguridad” para resguardarlas.")}
+      if(act==="login"||act==="signup"){
+        if(!em||!pw){cloud.msg="Escribí el mail y la contraseña.";render();return}
+        b.disabled=true;b.textContent="Un momento…";
+        var r=act==="login"?await sb.auth.signInWithPassword({email:em,password:pw}):await sb.auth.signUp({email:em,password:pw});
+        if(r.error){cloud.msg=r.error.message;render();return}
+        if(r.data&&r.data.session){await activar(r.data.session.user)}
+        else{cloud.msg="Te mandé un mail para confirmar la cuenta. Confirmalo y después tocá Ingresar.";render()}
+      }
+      if(act==="logout"){await sb.auth.signOut();cloud.ok=false;cloud.email="";setStatus("Sesión cerrada. Las fichas siguen en esta tablet.");render()}
+      if(act==="sync"){setStatus("Sincronizando…");await syncAll();setStatus("Sincronizado.");render()}
+      if(act==="fede"){
+        setStatus("Buscando respuestas…");var q=await sb.from("respuestas_fede").select("id,created_at,data").order("created_at",{ascending:false});
+        if(q.error)throw q.error;cloud.fede=q.data;S.view="fede";setStatus("");render();window.scrollTo(0,0)
+      }
+    }catch(e){cloud.msg="No se pudo completar. Revisá la conexión.";render()}
+  }
+  function fedeSum(d){var t=(d&&d.tasks)||[];return t.length+" tareas · "+fmt(sum(t,"minutos"))}
+  function importFede(id){
+    var row=(cloud.fede||[]).filter(function(x){return x.id===id})[0];if(!row)return;
+    var d=row.data||{},p=newPerson("Federico","Administrador");
+    p.tasks=(d.tasks||[]).map(function(t){var n=newTask();n.hora=t.hora||"";n.texto=t.texto||"";n.minutos=t.minutos||"";n.area=t.area||"";n.herr=t.herr||"";n.dec=t.dec||"";n.consec=t.nota||"";return n});
+    var ex=[];if((d.ideal||[]).length){ex.push("Su día ideal:");d.ideal.forEach(function(i){ex.push("- "+(i.texto||"")+(i.minutos?" ("+fmt(+i.minutos)+")":""))})}
+    var r=d.resp||{};
+    if(r.mas_tiempo)ex.push("","Lo que más tiempo le lleva: "+r.mas_tiempo);
+    if(r.dejar)ex.push("","Lo que dejaría o delegaría: "+r.dejar);
+    if(r.ausencia)ex.push("","Qué pasa cuando no está: "+r.ausencia);
+    p.ideas=ex.join("\n");
+    S.people.push(p);S.cur=p.id;S.step=0;S.view="";save(p);render();window.scrollTo(0,0);
   }
 
   /* ---------- cabecera ---------- */
@@ -187,11 +228,30 @@ var LOGO_E={w:440,h:319,b:"/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAQDAwMDAgQDAwMEBAQFB
   }
 
   /* ---------- vistas ---------- */
+  function cloudCardHtml(){
+    var h='<div class="card"><h3>Nube</h3>';
+    if(cloud.ok){
+      h+='<p class="note">Conectada como '+esc(cloud.email)+'. Las fichas se guardan solas en la nube.</p><div class="actions"><button class="btn sm" type="button" data-act="c-sync">Sincronizar ahora</button><button class="btn sm primary" type="button" data-act="c-fede">Respuestas de Fede</button><button class="btn sm" type="button" data-act="c-logout">Cerrar sesión</button></div>';
+    }else{
+      h+='<p class="note">Ingresá para guardar las fichas en la nube y ver las respuestas de Fede. Sin ingresar, todo se guarda en esta tablet.</p><div class="fields"><div class="f"><label for="lg-e">Mail</label><input id="lg-e" type="email" autocomplete="username"></div><div class="f"><label for="lg-p">Contraseña</label><input id="lg-p" type="password" autocomplete="current-password"></div></div><div class="actions"><button class="btn sm primary" type="button" data-act="c-login">Ingresar</button><button class="btn sm" type="button" data-act="c-signup">Crear cuenta (solo la primera vez)</button></div>';
+    }
+    if(cloud.msg)h+='<p class="note" style="color:var(--warn)">'+esc(cloud.msg)+'</p>';
+    return h+'</div>';
+  }
+  function viewFede(){
+    var rows=cloud.fede||[],h='<div class="panel"><button class="btn sm" type="button" data-act="home" style="align-self:flex-start">← Equipo</button><h1>Respuestas de Fede</h1><p class="lead">Lo que Fede envió desde su formulario. Importá una respuesta como ficha para seguir con el paso a paso y bajar el PDF.</p>';
+    if(!rows.length)h+='<div class="empty">Todavía no llegó ninguna respuesta.</div>';
+    else h+='<div class="list">'+rows.map(function(r){
+      var dt=new Date(r.created_at).toLocaleString("es-AR",{day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"});
+      return '<div class="card"><div><strong>'+esc(dt)+'</strong><br><span class="meta">'+esc(fedeSum(r.data))+'</span></div><div class="actions"><button class="btn sm primary" type="button" data-act="c-import" data-rid="'+r.id+'">Importar como ficha</button></div></div>'}).join("")+'</div>';
+    return h+'</div>';
+  }
   function viewHome(){
     var h='<div class="panel"><h1>Relevamiento del equipo</h1><p class="lead">Una ficha por persona. Se completa durante la charla de cada uno y se guarda sola.</p>';
     if(!S.people.length)h+='<div class="empty">Todavía no hay nadie. Agregá a la primera persona abajo.</div>';
     else h+='<div class="list">'+S.people.map(function(p){
       return '<button class="person" type="button" data-act="open" data-pid="'+p.id+'"><span><span class="n">'+esc(p.nombre||"Sin nombre")+'</span><br><span class="m">'+esc(p.puesto||"Sin puesto")+'</span></span><span class="m">'+p.tasks.length+' tareas · '+fmt(sum(p.tasks.filter(daily),"minutos"))+'</span></button>'}).join("")+'</div>';
+    h+=cloudCardHtml();
     h+='<div class="card"><h3>Copia de seguridad</h3><p class="note">Las fichas viven en este dispositivo. Bajá una copia de vez en cuando, o cargá una copia en otro dispositivo.</p><div class="actions"><button class="btn sm" type="button" data-act="export">Descargar copia</button><button class="btn sm" type="button" data-act="import">Cargar copia</button><input id="impf" type="file" accept="application/json,.json" style="display:none"></div></div>';
     h+='<div class="card"><h3>Agregar persona</h3><div class="fields"><div class="f"><label for="np-n">Nombre</label><input id="np-n" type="text" placeholder="Ej.: Ana"></div><div class="f"><label for="np-p">Puesto o rol</label><input id="np-p" type="text" placeholder="Ej.: Administrativa"></div></div><div class="actions"><button class="btn primary" type="button" data-act="addperson">+ Agregar</button></div></div></div>';
     return h;
@@ -296,7 +356,8 @@ var LOGO_E={w:440,h:319,b:"/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAQDAwMDAgQDAwMEBAQFB
   function render(focusSel){
     drawBrand();
     var p=person();
-    if(!p){$app.innerHTML=viewHome();return}
+    if(!p){$app.innerHTML=S.view==="fede"?viewFede():viewHome();return}
+    S.view="";
     $app.innerHTML='<div class="panel">'+personHead(p)+stepsNav()+[viewStep0,viewStep1,viewStep2,viewStep3][S.step](p)+'</div>';
     if(focusSel){var el=$app.querySelector(focusSel);if(el){el.focus();try{el.scrollIntoView({block:"center"})}catch(e){}}}
   }
@@ -320,7 +381,11 @@ var LOGO_E={w:440,h:319,b:"/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAQDAwMDAgQDAwMEBAQFB
   document.addEventListener("click",function(e){
     var b=e.target.closest("[data-act]");if(!b)return;
     var act=b.getAttribute("data-act"),p=person();
-    if(act==="home"){S.cur=null;S.open=null;render();return}
+    if(act==="home"){S.cur=null;S.open=null;S.view="";render();return}
+    if(act.indexOf("c-")===0){
+      if(act==="c-import"){importFede(b.getAttribute("data-rid"));return}
+      cloudAct(act.slice(2),b);return;
+    }
     if(act==="export"){
       var u=URL.createObjectURL(new Blob([JSON.stringify(S.people,null,1)],{type:"application/json"}));var a=document.createElement("a");a.href=u;a.download="relevamiento-roble-"+new Date().toISOString().slice(0,10)+".json";document.body.appendChild(a);a.click();document.body.removeChild(a);setTimeout(function(){URL.revokeObjectURL(u)},1500);return;
     }
@@ -335,7 +400,7 @@ var LOGO_E={w:440,h:319,b:"/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAQDAwMDAgQDAwMEBAQFB
     if(act==="delperson"){
       if(b.getAttribute("data-armed")!=="1"){b.setAttribute("data-armed","1");b.textContent="Tocá de nuevo para eliminar a "+(p.nombre||"esta persona");setTimeout(function(){b.removeAttribute("data-armed");b.textContent="Eliminar esta persona"},4000);return}
       S.people.splice(S.people.indexOf(p),1);S.cur=null;S.open=null;localSave();
-      if(canSave&&db)db.doc("relevamientos/"+p.id).delete().catch(function(){});
+      if(cloud.ok)sb.from("relevamientos").delete().eq("id",p.id).then(function(){});
       render();window.scrollTo(0,0);return;
     }
     if(act==="go"){go(+b.getAttribute("data-i"));return}
@@ -541,8 +606,8 @@ var LOGO_E={w:440,h:319,b:"/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAQDAwMDAgQDAwMEBAQFB
   try{var raw=localStorage.getItem(LS);if(raw)S.people=JSON.parse(raw)}catch(e){}
   render();
   conectar();
-  document.addEventListener("visibilitychange",function(){if(!document.hidden&&!canSave)conectar()});
-  window.addEventListener("focus",function(){if(!canSave)conectar()});
+  document.addEventListener("visibilitychange",function(){if(!document.hidden)conectar()});
+  window.addEventListener("online",conectar);
 })();
 </script>
 <script>if("serviceWorker" in navigator)window.addEventListener("load",function(){navigator.serviceWorker.register("sw.js").catch(function(){})});</script>

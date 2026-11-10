@@ -260,7 +260,7 @@ var LOGO_E={w:440,h:319,b:"/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAQDAwMDAgQDAwMEBAQFB
     [["mas_tiempo","Lo que más tiempo me lleva"],["dejar","Lo que dejaría o delegaría"],["ausencia","Qué pasa cuando no estoy"]].forEach(function(q){
       if(state.resp[q[0]])h+='<h3>'+q[1]+'</h3><p class="sumtxt">'+esc(state.resp[q[0]])+'</p>';
     });
-    h+='<div class="actions">'+(canSave?'<button class="btn primary" type="button" data-act="send">'+(state.enviado?'Volver a enviar':'Enviar a Mayra')+'</button>':'<a class="btn primary" style="text-decoration:none;display:inline-flex;align-items:center" href="https://wa.me/5491162299128?text='+encodeURIComponent(waText())+'" target="_blank" rel="noopener">Enviar a Mayra por WhatsApp</a>')+'<button class="btn" type="button" data-act="pdf">Descargar PDF</button><button class="btn" type="button" data-act="reset">Borrar todo y empezar de cero</button></div>';
+    h+='<div class="actions">'+(canSave?'<button class="btn primary" type="button" data-act="send">'+(state.enviado?'Volver a enviar':'Enviar a Mayra')+'</button>':'<button class="btn primary" type="button" data-act="sbsend">'+(state.enviado?'Volver a enviar a Mayra':'Enviar a Mayra')+'</button><a class="btn" style="text-decoration:none;display:inline-flex;align-items:center" href="https://wa.me/5491162299128?text='+encodeURIComponent(waText())+'" target="_blank" rel="noopener">Enviar por WhatsApp</a>')+'<button class="btn" type="button" data-act="pdf">Descargar PDF</button><button class="btn" type="button" data-act="reset">Borrar todo y empezar de cero</button></div>';
     if(state.enviado)h+='<p class="ok">Enviado. Gracias. Si cambiás algo, tocá “Volver a enviar”.</p>';
     if(!canSave)h+='<p class="note">Lo que escribís se guarda en este dispositivo. Al terminar, tocá “Enviar a Mayra por WhatsApp” o descargá el PDF.</p>';
     return h+navBtns(2,null);
@@ -313,6 +313,7 @@ var LOGO_E={w:440,h:319,b:"/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAQDAwMDAgQDAwMEBAQFB
       state.enviado=true;state.enviadoAt=new Date().toISOString();localDraft();
       setStatus("Guardando…");clearTimeout(timer);flush().then(function(){render()});return;
     }
+    if(act==="sbsend"){sendToMayra(b);return}
     if(act==="reset"){
       if(b.getAttribute("data-armed")!=="1"){b.setAttribute("data-armed","1");b.textContent="Tocá de nuevo para borrar todo";setTimeout(function(){b.removeAttribute("data-armed");b.textContent="Borrar todo y empezar de cero"},4000);return}
       state.tasks=[];state.ideal=[];state.resp={mas_tiempo:"",dejar:"",ausencia:""};state.enviado=false;state.enviadoAt=null;state.step=0;
@@ -487,6 +488,14 @@ var LOGO_E={w:440,h:319,b:"/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAQDAwMDAgQDAwMEBAQFB
       if(state.resp[q[0]]){L.push("");L.push("*"+q[1]+"*");L.push(state.resp[q[0]])}
     });
     return L.join("\n");
+  }
+  var SB_URL="https://ctaabydmafvnfmjoyjvv.supabase.co",SB_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImN0YWFieWRtYWZ2bmZtam95anZ2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTQzMzU2MjQsImV4cCI6MjEwOTkxMTYyNH0.oKMDSE-t5y_XL5xS0emI9GKfpseQTlKUQowdQ6XVACQ";
+  function sendToMayra(btn){
+    var old=btn.textContent;btn.disabled=true;btn.textContent="Enviando…";
+    var body=JSON.stringify({data:payload()});
+    fetch(SB_URL+"/rest/v1/respuestas_fede",{method:"POST",headers:{"apikey":SB_KEY,"Authorization":"Bearer "+SB_KEY,"Content-Type":"application/json","Prefer":"return=minimal"},body:body})
+      .then(function(r){if(!r.ok)throw new Error("http "+r.status);state.enviado=true;state.enviadoAt=new Date().toISOString();localDraft();setStatus("Enviado. Gracias.");render()})
+      .catch(function(){btn.disabled=false;btn.textContent=old;setStatus("No se pudo enviar. Revisá la conexión y probá de nuevo, o usá WhatsApp.",true)});
   }
   function downloadPdf(btn){
     var old=btn.textContent;
